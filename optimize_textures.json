@@ -1,0 +1,41 @@
+{
+    "debug": false,
+    "verbose": false,
+    "incremental": true,
+    "texdiag": {
+        "threads": "{cpucount}",
+        "source": "{path}",
+        "options": "info",
+        "command": "\"{scriptdir}\\thirdparty\\texdiag.exe\" {options} \"{sourcepath}\""
+    },
+    "convert": {
+        "threads": "{cpucount}",
+        "source": "{path}",
+        "destination": "{scriptdir}\\convert_output",
+        "options": "-define dds:compression=none -modulate 100,90,105 -brightness-contrast 0x5",
+        "command": "\"{scriptdir}\\thirdparty\\convert.exe\" \"{sourcepath}\" {options} \"{destinationpath}\""
+    },
+    "texconv": {
+        "ratio": 1,
+        "threads": 1,
+        "source": "{scriptdir}\\convert_output",
+        "destination": "{scriptdir}\\texconv_output",
+        "options": "-m {mipmaps} -pow2 -f BC7_UNORM -if FANT -nologo -w {width} -h {height}",
+        "command": "\"{scriptdir}\\thirdparty\\texconv.exe\" {options} -y -o \"{destinationdir}\" \"{sourcepath}\""
+    },
+    "recipe": [{
+        "pattern": "*.dds",
+        "key": "formatoptions",
+        "convert": {
+            "options": "-define dds:compression=none"
+        },
+        "texconv": {
+            "options": "-m {mipmaps} -pow2 -f BC7_UNORM -if FANT -nologo -w {width} -h {height}"
+        } 
+    }, {
+        "pattern": "/sub1/.*",
+        "convert": {
+            "options": "{formatoptions} -modulate 100,90,105 -brightness-contrast 0x5"
+        }
+    }]
+}
