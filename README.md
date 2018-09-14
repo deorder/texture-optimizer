@@ -8,6 +8,7 @@ I took the code from my not yet finished mo2 plugin and stripped all the QT code
  * Processing images using ImageMagick, see the following for options: https://www.imagemagick.org/script/command-line-processing.php
  * Processing images using TexConv (modified to support alpha-to-coverage if needed)
  * Scaling by ratio using TexConv. See the ratio option in the `optimize_textures.json` file
+ * Custom options according to matching pattern, supporting stacked options when multiple patterns match
  * Incremental update, only updating what has been modified
  * Multi-threading configurable per tool
 
