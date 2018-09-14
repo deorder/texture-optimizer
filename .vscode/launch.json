@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "python",
+            "name": "Python",
+            "console": "none",
+            "request": "launch",
+            "program": "${workspaceFolder}/optimize_textures.py",
+            "args": [
+                "testfiles\\without_compressed"
+            ]
+        }
+    ]
+}

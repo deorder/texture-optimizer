@@ -1,9 +1,11 @@
 import os
 import re
+import sys
 import math
+import time
 import json
 import random
-import sys, time
+import fnmatch
 
 import signal
 import traceback
@@ -12,6 +14,8 @@ import subprocess
 
 import multiprocessing
 import concurrent.futures
+
+from string import Template
 
 # FUNCTIONS
 
@@ -22,61 +26,112 @@ def scantree(path):
         else:
             yield entry
 
-def tasks_execute(config, section, entries, func, context):
+def files_enumerate(config, tools, path, files):
+    entries = []
+
+    for file in files:
+        task = {}
+        source = path
+        destination = None
+        subpath = os.path.relpath(file.path, path)
+        for tool in tools:
+            params = {}
+            
+            task[tool] = {}
+            task[tool]['options'] = ''
+            task[tool]['source'] = source
+            task[tool]['params'] = params
+
+            settings = config['tools'][tool]
+
+            if 'destination' in settings:
+                destination = settings['destination']
+                task[tool]['destination'] = destination
+
+            for recipe in config['recipes']:
+                if fnmatch.fnmatch(subpath, recipe['pattern']):
+                    if tool in recipe and 'options' in recipe[tool]:
+                        for param in recipe[tool]:
+                            if param not in ['options']:
+                                params[param] = Template(str(recipe[tool][param])).safe_substitute(**params)
+                        task[tool]['options'] = Template(recipe[tool]['options']).safe_substitute(**params)
+                        
+            source = destination
+
+        entries.append({'subpath': subpath, 'task': task})
+    return entries
+
+def tasks_execute(config, tool, entries, func, params):
     result = []
-    cpucount = max(1, multiprocessing.cpu_count() - 1)
+
     incremental = bool(config['incremental'])
+    cpucount = max(1, multiprocessing.cpu_count() - 1)
     scriptdir = os.path.dirname(os.path.realpath(__file__))
-    max_workers = int(str(config[section]['threads']).format(cpucount = cpucount))
-    config_file= os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
+    max_workers = int(Template(str(config['tools'][tool]['threads'])).safe_substitute(cpucount = cpucount))
+    config_file = os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
     config_file_stat = os.stat(config_file)
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
         futures = []
-        try:
-            source = config[section]['source'].format(**context)
-        except KeyError:
-            source = None
-        try:
-            destination = config[section]['destination'].format(**context)
-        except KeyError:
-            destination = None
         for entry in entries:
-            subpath = os.path.relpath(entry.path, path)
-            if source:
+            source = None
+            destination = None
+            task = entry['task'][tool]
+            subpath = entry['subpath']
+
+            if 'source' in task:
+                source = task['source']
                 source_file = os.path.join(source, subpath)
                 try:
                     source_file_stat = os.stat(source_file)
                 except FileNotFoundError:
                     source_file_stat = None
-            if destination:
+
+            if 'destination' in task:
+                destination = task['destination']
                 destination_file = os.path.join(destination, subpath)
                 try:
                     destination_file_stat = os.stat(destination_file)
                 except FileNotFoundError:
                     destination_file_stat = None
+
             if incremental:
                 if source and destination and config_file_stat and source_file_stat and destination_file_stat:
                     if not (source_file_stat.st_mtime > destination_file_stat.st_mtime or config_file_stat.st_mtime > destination_file_stat.st_mtime):
                         continue
-            futures.append(executor.submit(func, config, source, destination, subpath, context))
+
+            futures.append(executor.submit(func, config, entry, params))
+
         for future in concurrent.futures.as_completed(futures):
             result.append(future.result())
+
     return result
 
 # WORKER TASKS
 
-def texdiag_info_task(config, source, destination, subpath, context):
+def texdiag_info_task(config, entry, params):
     result = {}
-    result['info_key'] = subpath
+
     verbose = bool(config['verbose'])
+
+    subpath = entry['subpath']
+    result['info_subpath'] = subpath
+
+    task = entry['task']['info']
+    options = task['options']; task_params = task['params']
+    source = Template(task['source']).safe_substitute(**params); 
+
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
-    parameters = {'source': source, 'sourcepath': sourcepath, 'sourcedir': sourcedir, 'subpath': subpath, **context}
-    texdiag_command = config['texdiag']['command'].format(options = config['texdiag']['options'], **parameters).format(**parameters)
+
+    command_params = {'source': source, 'sourcepath': sourcepath, 'sourcedir': sourcedir, 'subpath': subpath, **task_params, **params}
+
+    texdiag_command = Template(Template(config['tools']['info']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
     process = subprocess.Popen(texdiag_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
     if not verbose: 
         print("texdiag: " + subpath)
     else: 
-        print("texdiag: " + texdiag_command)        
+        print("texdiag: " + texdiag_command)
+
     while True:
         stdout_line_newline = process.stdout.readline()
         stderr_line_newline = process.stderr.readline()
@@ -91,24 +146,36 @@ def texdiag_info_task(config, source, destination, subpath, context):
                 key = match.group(1); value = match.group(2)
                 if key and value:
                     result[key] = value
+
     return result
 
-def texconv_task(config, source, destination, subpath, context):
+def texconv_task(config, entry, params):
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
+
+    subpath = entry['subpath']
+
+    task = entry['task']['texconv']
+    options = task['options']; task_params = task['params']
+    source = Template(task['source']).safe_substitute(**params); 
+    destination = Template(task['destination']).safe_substitute(**params); 
+
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
     os.makedirs(destinationdir, exist_ok = True)
-    parameters = {
+
+    command_params = {
         'sourcepath': sourcepath, 'sourcedir': sourcedir, 'destinationpath': destinationpath, 'destinationdir': destinationdir,
-        'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **context, **context['info'][subpath]
+        'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **task_params, **params
     }
-    texconv_command = config['texconv']['command'].format(options = config['texconv']['options'], **parameters).format(**parameters)
+
+    texconv_command = Template(Template(config['tools']['texconv']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
     process = subprocess.Popen(texconv_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
     if not verbose: 
         print("texconv: " + subpath)
     else: 
-        print("texconv: " + texconv_command)    
+        print("texconv: " + texconv_command)
+
     while True:
         stdout_line_newline = process.stdout.readline()
         stderr_line_newline = process.stderr.readline()
@@ -124,22 +191,34 @@ def texconv_task(config, source, destination, subpath, context):
         if stderr_line_no_newline:
             print('error: ' + stderr_line_no_newline)
 
-def convert_task(config, source, destination, subpath, context):
+def convert_task(config, entry, params):
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
+
+    subpath = entry['subpath']
+
+    task = entry['task']['convert']
+    options = task['options']; task_params = task['params']
+    source = Template(task['source']).safe_substitute(**params); 
+    destination = Template(task['destination']).safe_substitute(**params); 
+
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
     os.makedirs(os.path.dirname(os.path.join(destination, subpath)), exist_ok = True)
-    parameters = {
+
+    command_params = {
         'sourcepath': sourcepath, 'sourcedir': sourcedir, 'destinationpath': destinationpath, 'destinationdir': destinationdir,
-        'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **context, **context['info'][subpath]
+        'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **task_params, **params
     }
-    convert_command =  config['convert']['command'].format(options = config['convert']['options'], **parameters).format(**parameters)
+
+    convert_command =  Template(Template(config['tools']['convert']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
     process = subprocess.Popen(convert_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
+
     if not verbose: 
         print("convert: " + subpath)
     else: 
-        print("convert: " + convert_command)    
+        print("convert: " + convert_command)
+
     while True:
         stdout_line_newline = process.stdout.readline()
         stderr_line_newline = process.stderr.readline()
@@ -161,15 +240,27 @@ with open(config_file, encoding='utf-8') as file:
     config = json.loads(file.read())
 
 for path in paths:
-    entries = [x for x in scantree(path) if x.is_file()]
-    texdiag_info_results = tasks_execute(config, "texdiag", entries, texdiag_info_task, {'scriptdir': scriptdir, 'path': path})
-    info = {x['info_key']: x for x in texdiag_info_results}
-    tasks_execute(config, "convert", entries, convert_task, {'scriptdir': scriptdir, 'path': path, 'info': info})
-    ratio = float(config['texconv']['ratio'])
-    def info_ratio_recalc(info, ratio):
-        info['width'] = int(float(info['width']) * ratio)
-        info['height'] = int(float(info['height']) * ratio)
-        info['mipmaps'] = math.ceil(math.log(min(info['width'], info['height']), 2)) + 1
-        return info
-    info = dict(map(lambda x: (x[0], info_ratio_recalc(x[1], ratio)), info.items()))
-    tasks_execute(config, "texconv", entries, texconv_task, {'scriptdir': scriptdir, 'path': path, 'info': info})
+    path = os.path.realpath(path)
+    files = [x for x in scantree(path) if x.is_file()]
+
+    info_entries = files_enumerate(config, ['info'], path, files)
+    info_list = tasks_execute(config, "info", info_entries, texdiag_info_task, {'scriptdir': scriptdir})
+    info_dict = {x['info_subpath']: x for x in info_list}
+
+    process_entries = files_enumerate(config, ['convert', 'texconv'], path, files) 
+    for entry in process_entries:
+        for tool in ['convert', 'texconv']:
+            task = entry['task'][tool]; params = task['params']; info = info_dict[entry['subpath']]
+
+            params['width'] = info['width']; params['height'] = info['height']
+            params['mipmaps'] = info['mipLevels']
+
+            if 'ratio' in params:
+                height = int(float(info['height']) * float(params['ratio']))
+                width = int(float(info['width']) * float(params['ratio']))
+                mipmaps = math.ceil(math.log(min(width, height), 2)) + 1
+                params['width'] = width; params['height'] = height
+                params['mipmaps'] = mipmaps
+
+    tasks_execute(config, "convert", process_entries, convert_task, {'scriptdir': scriptdir})
+    tasks_execute(config, "texconv", process_entries, texconv_task, {'scriptdir': scriptdir})
