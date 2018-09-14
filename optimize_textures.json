@@ -14,22 +14,22 @@
         }
     }, {
         "pattern": "*.dds",
-        "convert": {
-            "formatoptions": "-define dds:compression=none",
+        "texconv": {
+            "formatoptions": "-f BC7_UNORM",
             "options": "$baseoptions $formatoptions"
         },
-        "texconv": {
-            "formatoptions": "-m $mipmaps -f BC7_UNORM",
+        "convert": {
+            "formatoptions": "-define dds:compression=none",
             "options": "$baseoptions $formatoptions"
         }
     }, {
         "pattern": "sub1\\*",
-        "convert": {
-            "options": "$baseoptions $formatoptions -modulate 100,90,105 -brightness-contrast 0x5"
-        },
         "texconv": {
             "ratio": 0.5,
-            "options": "$baseoptions $formatoptions -w $width -h $height"
+            "options": "$baseoptions $formatoptions -m $mipmaps -w $width -h $height"
+        },
+        "convert": {
+            "options": "$baseoptions $formatoptions -modulate 100,90,105 -brightness-contrast 0x5"
         }
     }],
     "tools": {
