@@ -4,6 +4,7 @@ import sys
 import math
 import time
 import json
+import copy
 import random
 import fnmatch
 
@@ -19,19 +20,27 @@ from string import Template
 
 # FUNCTIONS
 
-def scantree(path):
-    for entry in os.scandir(path):
-        if entry.is_dir(follow_symlinks=False):
-            yield from scantree(entry)
-        else:
-            yield entry
+def destination_older_test(sources, destination, subpath):
+    destination_file_stat = os.stat(os.path.join(destination, subpath))
+    source_file_stats = [os.stat(os.path.join(x, subpath)) for x in sources]
+    return any(map(lambda x: x.st_mtime > destination_file_stat.st_mtime , source_file_stats))
 
-def entries_calculate(tools, info_dict, entries):
+# GENERATORS
+
+def scantree_generator(path, root = None):
+    for entry in os.scandir(path):
+        if entry.is_dir(follow_symlinks = False):
+            yield from scantree_generator(entry, path)
+        else:
+            subpath = os.path.relpath(entry.path, root or path)
+            yield {'subpath': subpath, 'path': entry.path}
+
+def entries_recalc_generator(infos, entries):
     for entry in entries:
-        for tool in ['convert', 'texconv']:
-            task = entry['task'][tool]
-            params = task['params']
-            info = info_dict[entry['subpath']]
+        result = copy.copy(entry)
+        if 'params' in entry:
+            info = infos[entry['subpath']]
+            params = result['params'] = copy.copy(entry['params'])
 
             params['width'] = info['width']
             params['height'] = info['height']
@@ -43,95 +52,41 @@ def entries_calculate(tools, info_dict, entries):
                 mipmaps = math.ceil(math.log(min(width, height), 2)) + 1
                 params['width'] = width; params['height'] = height
                 params['mipmaps'] = mipmaps
-        yield entry
 
-def files_enumerate(config, tools, path, files):
-    for file in files:
-        task = {}
-        source = path
-        destination = None
-        subpath = os.path.relpath(file.path, path)
-        for tool in tools:
-            params = {}
-            
-            task[tool] = {}
-            task[tool]['options'] = ''
-            task[tool]['source'] = source
-            task[tool]['params'] = params
+        yield result
 
-            settings = config['tools'][tool]
+def entries_enumerate_generator(toolname, recipes, entries, source = None, destination = None):
+    for entry in entries:
+        params = {}
+        result = {}
 
-            if 'destination' in settings:
-                destination = settings['destination']
-                task[tool]['destination'] = destination
+        result['options'] = ''
+        result['params'] = params
+        result['source'] = source
+        result['destination'] = destination
 
-            for recipe in config['recipes']:
-                if fnmatch.fnmatch(subpath, recipe['pattern']):
-                    if tool in recipe and 'options' in recipe[tool]:
-                        for param in recipe[tool]:
-                            if param not in ['options']:
-                                params[param] = Template(str(recipe[tool][param])).safe_substitute(**params)
-                        task[tool]['options'] = Template(recipe[tool]['options']).safe_substitute(**params)
-                        
-            source = destination
+        subpath = result['subpath'] = entry['subpath']
 
-        yield {'subpath': subpath, 'task': task}
+        for recipe in recipes:
+            if fnmatch.fnmatch(subpath, recipe['pattern']):
+                if toolname in recipe and 'options' in recipe[toolname]:
+                    for param in recipe[toolname]:
+                        if param not in ['options']:
+                            params[param] = Template(str(recipe[toolname][param])).safe_substitute(**params)
+                    result['options'] = Template(recipe[toolname]['options']).safe_substitute(**params)
 
-def tasks_execute(config, tool, entries, func, params):
-    incremental = bool(config['incremental'])
-    cpucount = max(1, multiprocessing.cpu_count() - 1)
-    scriptdir = os.path.dirname(os.path.realpath(__file__))
-    max_workers = int(Template(str(config['tools'][tool]['threads'])).safe_substitute(cpucount = cpucount))
-    config_file = os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
-    config_file_stat = os.stat(config_file)
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
-        futures = []
-        for entry in entries:
-            source = None
-            destination = None
-            task = entry['task'][tool]
-            subpath = entry['subpath']
-
-            if 'source' in task:
-                source = task['source']
-                source_file = os.path.join(source, subpath)
-                try:
-                    source_file_stat = os.stat(source_file)
-                except FileNotFoundError:
-                    source_file_stat = None
-
-            if 'destination' in task:
-                destination = task['destination']
-                destination_file = os.path.join(destination, subpath)
-                try:
-                    destination_file_stat = os.stat(destination_file)
-                except FileNotFoundError:
-                    destination_file_stat = None
-
-            if incremental:
-                if source and destination and config_file_stat and source_file_stat and destination_file_stat:
-                    if not (source_file_stat.st_mtime > destination_file_stat.st_mtime or config_file_stat.st_mtime > destination_file_stat.st_mtime):
-                        continue
-
-            futures.append(executor.submit(func, config, entry, params))
-
-        for future in concurrent.futures.as_completed(futures):
-            yield future.result()
+        yield result
 
 # WORKER TASKS
 
-def texdiag_info_task(config, entry, params):
-    result = {}
-
-    verbose = bool(config['verbose'])
+def info_task(config, entry, params):
+    info = {}
 
     subpath = entry['subpath']
-    result['info_subpath'] = subpath
+    verbose = bool(config['verbose'])
 
-    task = entry['task']['info']
-    options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params)
+    options = entry['options']; task_params = entry['params']
+    source = Template(entry['source']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
 
@@ -157,20 +112,18 @@ def texdiag_info_task(config, entry, params):
             if match:
                 key = match.group(1); value = match.group(2)
                 if key and value:
-                    result[key] = value
+                    info[key] = value
 
-    return result
+    return {'subpath': subpath, 'info': info}
 
 def texconv_task(config, entry, params):
+    subpath = entry['subpath']
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
 
-    subpath = entry['subpath']
-
-    task = entry['task']['texconv']
-    options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params)
-    destination = Template(task['destination']).safe_substitute(**params)
+    options = entry['options']; task_params = entry['params']
+    source = Template(entry['source']).safe_substitute(**params)
+    destination = Template(entry['destination']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
@@ -204,15 +157,13 @@ def texconv_task(config, entry, params):
             print('error: ' + stderr_line_no_newline)
 
 def convert_task(config, entry, params):
+    subpath = entry['subpath']
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
 
-    subpath = entry['subpath']
-
-    task = entry['task']['convert']
-    options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params)
-    destination = Template(task['destination']).safe_substitute(**params)
+    options = entry['options']; task_params = entry['params']
+    source = Template(entry['source']).safe_substitute(**params)
+    destination = Template(entry['destination']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
@@ -246,6 +197,7 @@ def convert_task(config, entry, params):
 if __name__ == '__main__':
 
     paths = sys.argv[1:]
+    cpucount = max(1, multiprocessing.cpu_count() - 1)
     scriptdir = os.path.dirname(os.path.realpath(__file__))
 
     config_file = os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
@@ -254,18 +206,41 @@ if __name__ == '__main__':
 
     for path in paths:
         path = os.path.realpath(path)
-        files = [x for x in scantree(path) if x.is_file()]
 
-        info_entries = files_enumerate(config, ['info'], path, files)
-        info_list = tasks_execute(config, "info", info_entries, texdiag_info_task, {'scriptdir': scriptdir})
-        info_dict = {x['info_subpath']: x for x in info_list}
+        files = list(scantree_generator(path))
 
-        entries = files_enumerate(config, ['convert', 'texconv'], path, files)
-        calculated_entries = entries_calculate(['convert'], info_dict, entries)
+        infos = {}
+        source = path
+        entries = entries_enumerate_generator('info', config['recipes'], files, source)
+        max_workers = int(Template(str(config['tools']['info']['threads'])).safe_substitute(cpucount = cpucount))
+        with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
+            futures = []
+            for entry in entries:
+                futures.append(executor.submit(info_task, config, entry, {'scriptdir': scriptdir}))
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                infos[result['subpath']] = result['info']
 
-        list(tasks_execute(config, "convert", calculated_entries, convert_task, {'scriptdir': scriptdir}))
+        source = path
+        destination = config['tools']['convert']['destination']
+        entries = entries_enumerate_generator('convert', config['recipes'], files, source, destination)
+        calculated_entries = entries_recalc_generator(infos, entries)
 
-        entries = files_enumerate(config, ['convert', 'texconv'], path, files)
-        calculated_entries = entries_calculate(['texconv'], info_dict, entries)
+        with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
+            futures = []
+            for entry in calculated_entries:
+                futures.append(executor.submit(convert_task, config, entry, {'scriptdir': scriptdir}))
+            for future in concurrent.futures.as_completed(futures):
+                pass
 
-        list(tasks_execute(config, "texconv", calculated_entries, texconv_task, {'scriptdir': scriptdir}))
+        source = config['tools']['convert']['destination']
+        destination = config['tools']['texconv']['destination']
+        entries = entries_enumerate_generator('texconv', config['recipes'], files, source, destination)
+        calculated_entries = entries_recalc_generator(infos, entries)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
+            futures = []
+            for entry in calculated_entries:
+                futures.append(executor.submit(texconv_task, config, entry, {'scriptdir': scriptdir}))
+            for future in concurrent.futures.as_completed(futures):
+                pass
