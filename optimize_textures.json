@@ -1,6 +1,6 @@
 {
     "debug": false,
-    "verbose": false,
+    "verbose": true,
     "incremental": true,
     "recipes": [{
         "pattern": "*",

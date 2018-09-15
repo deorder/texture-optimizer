@@ -20,10 +20,13 @@ from string import Template
 
 # FUNCTIONS
 
-def destination_older_test(sources, destination, subpath):
-    destination_file_stat = os.stat(os.path.join(destination, subpath))
-    source_file_stats = [os.stat(os.path.join(x, subpath)) for x in sources]
-    return any(map(lambda x: x.st_mtime > destination_file_stat.st_mtime , source_file_stats))
+def destination_outofdate_test(source_files, destination_file):
+    try:
+        destination_file_stat = os.stat(destination_file)
+    except FileNotFoundError:
+        return True
+    source_file_stats = [os.stat(x) for x in source_files]
+    return any(map(lambda x: x.st_mtime > destination_file_stat.st_mtime, source_file_stats))
 
 # GENERATORS
 
@@ -35,7 +38,7 @@ def scantree_generator(path, root = None):
             subpath = os.path.relpath(entry.path, root or path)
             yield {'subpath': subpath, 'path': entry.path}
 
-def entries_recalc_generator(infos, entries):
+def entries_calculate_generator(infos, entries):
     for entry in entries:
         result = copy.copy(entry)
         if 'params' in entry:
@@ -55,15 +58,13 @@ def entries_recalc_generator(infos, entries):
 
         yield result
 
-def entries_enumerate_generator(toolname, recipes, entries, source = None, destination = None):
+def entries_enumerate_generator(toolname, recipes, entries):
     for entry in entries:
         params = {}
         result = {}
 
         result['options'] = ''
         result['params'] = params
-        result['source'] = source
-        result['destination'] = destination
 
         subpath = result['subpath'] = entry['subpath']
 
@@ -79,20 +80,19 @@ def entries_enumerate_generator(toolname, recipes, entries, source = None, desti
 
 # WORKER TASKS
 
-def info_task(config, entry, params):
+def info_task(config, source, entry, params):
     info = {}
 
     subpath = entry['subpath']
+    options = entry['options']
+    task_params = entry['params']
+
     verbose = bool(config['verbose'])
-
-    options = entry['options']; task_params = entry['params']
-    source = Template(entry['source']).safe_substitute(**params)
-
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
 
     command_params = {'source': source, 'sourcepath': sourcepath, 'sourcedir': sourcedir, 'subpath': subpath, **task_params, **params}
 
-    texdiag_command = Template(Template(config['tools']['info']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
+    texdiag_command = Template(config['tools']['info']['command']).safe_substitute(options = Template(options).safe_substitute(**command_params), **command_params)
     process = subprocess.Popen(texdiag_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
     if not verbose: 
         print("texdiag: " + subpath)
@@ -116,17 +116,16 @@ def info_task(config, entry, params):
 
     return {'subpath': subpath, 'info': info}
 
-def texconv_task(config, entry, params):
-    subpath = entry['subpath']
+def texconv_task(config, source, destination, entry, params):
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
 
-    options = entry['options']; task_params = entry['params']
-    source = Template(entry['source']).safe_substitute(**params)
-    destination = Template(entry['destination']).safe_substitute(**params)
-
+    subpath = entry['subpath']
+    options = entry['options']
+    task_params = entry['params']
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
+
     os.makedirs(destinationdir, exist_ok = True)
 
     command_params = {
@@ -134,7 +133,7 @@ def texconv_task(config, entry, params):
         'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **task_params, **params
     }
 
-    texconv_command = Template(Template(config['tools']['texconv']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
+    texconv_command = Template(config['tools']['texconv']['command']).safe_substitute(options = Template(options).safe_substitute(**command_params), **command_params)
     process = subprocess.Popen(texconv_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
     if not verbose: 
         print("texconv: " + subpath)
@@ -156,17 +155,16 @@ def texconv_task(config, entry, params):
         if stderr_line_no_newline:
             print('error: ' + stderr_line_no_newline)
 
-def convert_task(config, entry, params):
-    subpath = entry['subpath']
+def convert_task(config, source, destination, entry, params):
     debug = bool(config['debug'])
     verbose = bool(config['verbose'])
 
-    options = entry['options']; task_params = entry['params']
-    source = Template(entry['source']).safe_substitute(**params)
-    destination = Template(entry['destination']).safe_substitute(**params)
-
+    subpath = entry['subpath']
+    options = entry['options']
+    task_params = entry['params']
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
+
     os.makedirs(os.path.dirname(os.path.join(destination, subpath)), exist_ok = True)
 
     command_params = {
@@ -174,7 +172,7 @@ def convert_task(config, entry, params):
         'source': source, 'destination': destination, 'subpath': subpath, 'subdir': os.path.dirname(subpath), **task_params, **params
     }
 
-    convert_command =  Template(Template(config['tools']['convert']['command']).safe_substitute(options = options, **command_params)).safe_substitute(**command_params)
+    convert_command = Template(config['tools']['convert']['command']).safe_substitute(options = Template(options).safe_substitute(**command_params), **command_params)
     process = subprocess.Popen(convert_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True)
 
     if not verbose: 
@@ -206,41 +204,54 @@ if __name__ == '__main__':
 
     for path in paths:
         path = os.path.realpath(path)
+        params = {'scriptdir': scriptdir}
 
         files = list(scantree_generator(path))
 
         infos = {}
         source = path
-        entries = entries_enumerate_generator('info', config['recipes'], files, source)
+        entries = entries_enumerate_generator('info', config['recipes'], files)
         max_workers = int(Template(str(config['tools']['info']['threads'])).safe_substitute(cpucount = cpucount))
         with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
             futures = []
             for entry in entries:
-                futures.append(executor.submit(info_task, config, entry, {'scriptdir': scriptdir}))
+                futures.append(executor.submit(info_task, config, source, entry, {**params}))
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 infos[result['subpath']] = result['info']
 
         source = path
-        destination = config['tools']['convert']['destination']
-        entries = entries_enumerate_generator('convert', config['recipes'], files, source, destination)
-        calculated_entries = entries_recalc_generator(infos, entries)
+        destination = Template(config['tools']['convert']['destination']).safe_substitute(**params)
+        entries = entries_enumerate_generator('convert', config['recipes'], files)
+        calculated_entries = entries_calculate_generator(infos, entries)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
             futures = []
             for entry in calculated_entries:
-                futures.append(executor.submit(convert_task, config, entry, {'scriptdir': scriptdir}))
+                source_files = [
+                    config_file,
+                    os.path.join(source, entry['subpath'])
+                ]
+                destination_file = os.path.join(destination, entry['subpath'])
+                if not destination_outofdate_test(source_files, destination_file): continue
+                futures.append(executor.submit(convert_task, config, source, destination, entry, {**params}))
             for future in concurrent.futures.as_completed(futures):
                 pass
 
-        source = config['tools']['convert']['destination']
-        destination = config['tools']['texconv']['destination']
-        entries = entries_enumerate_generator('texconv', config['recipes'], files, source, destination)
-        calculated_entries = entries_recalc_generator(infos, entries)
+        source = destination
+        destination = Template(config['tools']['texconv']['destination']).safe_substitute(**params)
+        entries = entries_enumerate_generator('texconv', config['recipes'], files)
+        calculated_entries = entries_calculate_generator(infos, entries)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers = max_workers) as executor:
             futures = []
             for entry in calculated_entries:
-                futures.append(executor.submit(texconv_task, config, entry, {'scriptdir': scriptdir}))
+                source_files = [
+                    config_file,
+                    os.path.join(source, entry['subpath'])
+                ]
+                destination_file = os.path.join(destination, entry['subpath'])
+                if not destination_outofdate_test(source_files, destination_file): continue
+                futures.append(executor.submit(texconv_task, config, source, destination, entry, {**params}))
             for future in concurrent.futures.as_completed(futures):
                 pass
