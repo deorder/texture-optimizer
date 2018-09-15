@@ -26,7 +26,7 @@ def scantree(path):
         else:
             yield entry
 
-def entries_calculate(tools, entries):
+def entries_calculate(tools, info_dict, entries):
     for entry in entries:
         for tool in ['convert', 'texconv']:
             task = entry['task'][tool]
@@ -261,11 +261,11 @@ if __name__ == '__main__':
         info_dict = {x['info_subpath']: x for x in info_list}
 
         entries = files_enumerate(config, ['convert', 'texconv'], path, files)
-        calculated_entries = entries_calculate(['convert'], entries)
+        calculated_entries = entries_calculate(['convert'], info_dict, entries)
 
         list(tasks_execute(config, "convert", calculated_entries, convert_task, {'scriptdir': scriptdir}))
 
         entries = files_enumerate(config, ['convert', 'texconv'], path, files)
-        calculated_entries = entries_calculate(['texconv'], entries)
+        calculated_entries = entries_calculate(['texconv'], info_dict, entries)
 
         list(tasks_execute(config, "texconv", calculated_entries, texconv_task, {'scriptdir': scriptdir}))
