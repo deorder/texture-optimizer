@@ -26,9 +26,26 @@ def scantree(path):
         else:
             yield entry
 
-def files_enumerate(config, tools, path, files):
-    entries = []
+def entries_calculate(tools, entries):
+    for entry in entries:
+        for tool in ['convert', 'texconv']:
+            task = entry['task'][tool]
+            params = task['params']
+            info = info_dict[entry['subpath']]
 
+            params['width'] = info['width']
+            params['height'] = info['height']
+            params['mipmaps'] = info['mipLevels']
+
+            if 'ratio' in params:
+                width = int(float(info['width']) * float(params['ratio']))
+                height = int(float(info['height']) * float(params['ratio']))
+                mipmaps = math.ceil(math.log(min(width, height), 2)) + 1
+                params['width'] = width; params['height'] = height
+                params['mipmaps'] = mipmaps
+        yield entry
+
+def files_enumerate(config, tools, path, files):
     for file in files:
         task = {}
         source = path
@@ -58,12 +75,9 @@ def files_enumerate(config, tools, path, files):
                         
             source = destination
 
-        entries.append({'subpath': subpath, 'task': task})
-    return entries
+        yield {'subpath': subpath, 'task': task}
 
 def tasks_execute(config, tool, entries, func, params):
-    result = []
-
     incremental = bool(config['incremental'])
     cpucount = max(1, multiprocessing.cpu_count() - 1)
     scriptdir = os.path.dirname(os.path.realpath(__file__))
@@ -103,9 +117,7 @@ def tasks_execute(config, tool, entries, func, params):
             futures.append(executor.submit(func, config, entry, params))
 
         for future in concurrent.futures.as_completed(futures):
-            result.append(future.result())
-
-    return result
+            yield future.result()
 
 # WORKER TASKS
 
@@ -119,7 +131,7 @@ def texdiag_info_task(config, entry, params):
 
     task = entry['task']['info']
     options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params); 
+    source = Template(task['source']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
 
@@ -157,8 +169,8 @@ def texconv_task(config, entry, params):
 
     task = entry['task']['texconv']
     options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params); 
-    destination = Template(task['destination']).safe_substitute(**params); 
+    source = Template(task['source']).safe_substitute(**params)
+    destination = Template(task['destination']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
@@ -199,8 +211,8 @@ def convert_task(config, entry, params):
 
     task = entry['task']['convert']
     options = task['options']; task_params = task['params']
-    source = Template(task['source']).safe_substitute(**params); 
-    destination = Template(task['destination']).safe_substitute(**params); 
+    source = Template(task['source']).safe_substitute(**params)
+    destination = Template(task['destination']).safe_substitute(**params)
 
     sourcepath = os.path.join(source, subpath); sourcedir = os.path.dirname(sourcepath)
     destinationpath = os.path.join(destination, subpath); destinationdir = os.path.dirname(destinationpath)
@@ -231,36 +243,29 @@ def convert_task(config, entry, params):
             print('error: ' + stderr_line_no_newline)
 
 # MAIN
+if __name__ == '__main__':
 
-paths = sys.argv[1:]
-scriptdir = os.path.dirname(os.path.realpath(__file__))
+    paths = sys.argv[1:]
+    scriptdir = os.path.dirname(os.path.realpath(__file__))
 
-config_file= os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
-with open(config_file, encoding='utf-8') as file:
-    config = json.loads(file.read())
+    config_file = os.path.join(scriptdir, '{}.json'.format(os.path.splitext(os.path.basename(__file__))[0]))
+    with open(config_file, encoding='utf-8') as file:
+        config = json.loads(file.read())
 
-for path in paths:
-    path = os.path.realpath(path)
-    files = [x for x in scantree(path) if x.is_file()]
+    for path in paths:
+        path = os.path.realpath(path)
+        files = [x for x in scantree(path) if x.is_file()]
 
-    info_entries = files_enumerate(config, ['info'], path, files)
-    info_list = tasks_execute(config, "info", info_entries, texdiag_info_task, {'scriptdir': scriptdir})
-    info_dict = {x['info_subpath']: x for x in info_list}
+        info_entries = files_enumerate(config, ['info'], path, files)
+        info_list = tasks_execute(config, "info", info_entries, texdiag_info_task, {'scriptdir': scriptdir})
+        info_dict = {x['info_subpath']: x for x in info_list}
 
-    process_entries = files_enumerate(config, ['convert', 'texconv'], path, files) 
-    for entry in process_entries:
-        for tool in ['convert', 'texconv']:
-            task = entry['task'][tool]; params = task['params']; info = info_dict[entry['subpath']]
+        entries = files_enumerate(config, ['convert', 'texconv'], path, files)
+        calculated_entries = entries_calculate(['convert'], entries)
 
-            params['width'] = info['width']; params['height'] = info['height']
-            params['mipmaps'] = info['mipLevels']
+        list(tasks_execute(config, "convert", calculated_entries, convert_task, {'scriptdir': scriptdir}))
 
-            if 'ratio' in params:
-                height = int(float(info['height']) * float(params['ratio']))
-                width = int(float(info['width']) * float(params['ratio']))
-                mipmaps = math.ceil(math.log(min(width, height), 2)) + 1
-                params['width'] = width; params['height'] = height
-                params['mipmaps'] = mipmaps
+        entries = files_enumerate(config, ['convert', 'texconv'], path, files)
+        calculated_entries = entries_calculate(['texconv'], entries)
 
-    tasks_execute(config, "convert", process_entries, convert_task, {'scriptdir': scriptdir})
-    tasks_execute(config, "texconv", process_entries, texconv_task, {'scriptdir': scriptdir})
+        list(tasks_execute(config, "texconv", calculated_entries, texconv_task, {'scriptdir': scriptdir}))
