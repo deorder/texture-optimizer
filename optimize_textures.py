@@ -31,11 +31,12 @@ def destination_outofdate_test(source_files, destination_file):
 # GENERATORS
 
 def scantree_generator(path, root = None):
+    if not root: root = path
     for entry in os.scandir(path):
         if entry.is_dir(follow_symlinks = False):
-            yield from scantree_generator(entry, path)
+            yield from scantree_generator(entry, root)
         else:
-            subpath = os.path.relpath(entry.path, root or path)
+            subpath = os.path.relpath(entry.path, root)
             yield {'subpath': subpath, 'path': entry.path}
 
 def entries_calculate_generator(infos, entries):
