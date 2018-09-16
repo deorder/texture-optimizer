@@ -209,6 +209,7 @@ if __name__ == '__main__':
 
         files = list(scantree_generator(path))
 
+        # Get info
         infos = {}
         source = path
         entries = entries_enumerate_generator('info', config['recipes'], files)
@@ -221,6 +222,7 @@ if __name__ == '__main__':
                 result = future.result()
                 infos[result['subpath']] = result['info']
 
+        # Run convert
         source = path
         destination = Template(config['tools']['convert']['destination']).safe_substitute(**params)
         entries = entries_enumerate_generator('convert', config['recipes'], files)
@@ -239,6 +241,7 @@ if __name__ == '__main__':
             for future in concurrent.futures.as_completed(futures):
                 pass
 
+        # Run texconv
         source = destination
         destination = Template(config['tools']['texconv']['destination']).safe_substitute(**params)
         entries = entries_enumerate_generator('texconv', config['recipes'], files)
