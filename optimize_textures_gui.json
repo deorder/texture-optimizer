@@ -1,0 +1,51 @@
+{
+    "debug": false,
+    "verbose": false,
+    "incremental": true,
+    "recipes": [{
+        "pattern": "*",
+        "convert": {
+            "baseoptions": "-verbose",
+            "options": "$baseoptions"
+        },
+        "texconv": {
+            "baseoptions": "-pow2 -if FANT -nologo",
+            "options": "$baseoptions"
+        }
+    }, {
+        "pattern": "*.dds",
+        "texconv": {
+            "formatoptions": "-f BC7_UNORM",
+            "options": "$baseoptions $formatoptions"
+        },
+        "convert": {
+            "formatoptions": "-define dds:compression=none",
+            "options": "$baseoptions $formatoptions"
+        }
+    }, {
+        "pattern": "sub1\\*",
+        "texconv": {
+            "ratio": 0.5,
+            "options": "$baseoptions $formatoptions -m $mipmaps -w $width -h $height"
+        },
+        "convert": {
+            "options": "$baseoptions $formatoptions -modulate 100,90,105 -brightness-contrast 0x5"
+        }
+    }],
+    "tools": {
+        "info": {
+            "threads": "$cpucount",
+            "command": "\"$scriptdir\\thirdparty\\texdiag.exe\" info \"$sourcepath\""
+        },
+        "convert": {
+            "threads": "$cpucount",
+            "destination": "$scriptdir\\convert_output",
+            "command": "\"$scriptdir\\thirdparty\\convert.exe\" \"$sourcepath\" $options \"$destinationpath\""
+        },
+        "texconv": {
+            "threads": 1,
+            "destination": "$scriptdir\\texconv_output",
+            "command": "\"$scriptdir\\thirdparty\\texconv.exe\" $options -y -o \"$destinationdir\" \"$sourcepath\""
+        }
+    }
+}

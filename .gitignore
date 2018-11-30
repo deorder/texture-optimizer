@@ -102,6 +102,3 @@ venv.bak/
 
 # mypy
 .mypy_cache/
-
-optimize_textures_gui.py
-optimize_textures_gui.json

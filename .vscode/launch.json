@@ -6,7 +6,7 @@
             "name": "Python",
             "console": "none",
             "request": "launch",
-            "program": "${workspaceFolder}/optimize_textures.py",
+            "program": "${workspaceFolder}/optimize_textures_gui.py",
             "args": [
                 "testfiles\\without_compressed"
             ]
