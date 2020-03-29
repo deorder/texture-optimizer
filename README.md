@@ -12,7 +12,7 @@ I took the code from my not yet finished mo2 plugin and stripped all the QT code
  * Incremental update, only updating what has been modified
  * Multi-threading configurable per tool
 
-It runs the tools in the following order: inpurt -> ImageMagick -> TexConv -> output
+It runs the tools in the following order: input -> ImageMagick -> TexConv -> output
 
 ## Usage
 Drag & drop a directory onto the `optimize_textures.bat` file. This will process the directory according to the settings inside the `optimize_textures.json` file.
